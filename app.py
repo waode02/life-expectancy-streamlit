@@ -267,7 +267,7 @@ TAHUN_MIN, TAHUN_MAX = int(DF["year"].min()), int(DF["year"].max())
 # ------------------------------------------------------------------
 st.sidebar.title("🌍 SDG 3")
 st.sidebar.caption("Good Health and Well-being")
-MENU = ["🏠 Dashboard", "📊 Data", "📈 EDA", "❤️ Analisis Kesehatan", "🤖 Prediksi", "🧠 Model"]
+MENU = ["🏠 Dashboard", "📊 Data", "🌎 Profil Negara", "📈 EDA", "❤️ Analisis Kesehatan", "🤖 Prediksi", "🧠 Model"]
 halaman = st.sidebar.radio("Menu", MENU, label_visibility="collapsed")
 st.sidebar.divider()
 st.sidebar.caption(
@@ -376,6 +376,83 @@ def page_data():
         st.caption("Catatan: who_table berisi 3 kategori `sex`; analisis memakai kategori **Both sexes**.")
     st.download_button("⬇️ Unduh data yang ditampilkan (CSV)", df.to_csv(index=False).encode("utf-8"),
                        file_name=f"{kunci}_filter.csv", mime="text/csv")
+
+
+# ------------------------------------------------------------------
+# PROFIL NEGARA  (cari angka harapan hidup per negara)
+# ------------------------------------------------------------------
+def page_negara():
+    st.title("🌎 Profil Negara")
+    st.write("Pilih negara untuk melihat angka harapan hidupnya, dan bandingkan dengan negara lain.")
+
+    daftar = sorted(DF["country_name"].unique())
+    c1, c2, c3 = st.columns([2, 3, 2])
+    negara = c1.selectbox("Negara", daftar, index=daftar.index("Indonesia") if "Indonesia" in daftar else 0)
+    banding = c2.multiselect("Bandingkan dengan (opsional)", [n for n in daftar if n != negara],
+                             placeholder="Pilih satu atau lebih negara")
+    sub = DF[DF["country_name"] == negara].sort_values("year")
+    tahun_ada = sorted(sub["year"].unique())
+    tahun = c3.selectbox("Tahun", tahun_ada, index=len(tahun_ada) - 1, key="negara_tahun",
+                         help="Dipakai untuk angka ringkasan di bawah; grafik menampilkan semua tahun.")
+
+    baris = sub[sub["year"] == tahun].iloc[0]
+    d_th = DF[DF["year"] == tahun]
+    rata_dunia = d_th[TARGET].mean()
+    peringkat = int(d_th[TARGET].rank(ascending=False, method="min").loc[baris.name])
+    awal = sub.iloc[0]
+
+    st.subheader(f"{negara} · {baris['region']}")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(f"Life expectancy {tahun}", f"{baris[TARGET]:.2f} th",
+              delta=f"{baris[TARGET] - rata_dunia:+.2f} th dari rata-rata dunia")
+    m2.metric(f"Perubahan sejak {int(awal['year'])}", f"{baris[TARGET] - awal[TARGET]:+.2f} th",
+              help=f"{awal[TARGET]:.2f} tahun pada {int(awal['year'])}")
+    m3.metric("Peringkat", f"{peringkat} dari {len(d_th)}", help=f"Dari {len(d_th)} negara pada tahun {tahun}")
+    m4.metric("Rata-rata dunia", f"{rata_dunia:.2f} th")
+
+    # laki-laki vs perempuan (dari who_table asli)
+    who = _kode(RAW["who_table"])
+    jk = who[(who["country_code"] == baris["country_code"]) & (who["year"] == tahun)].set_index("sex")[TARGET]
+    if {"Female", "Male"} <= set(jk.index):
+        j1, j2, j3 = st.columns(3)
+        j1.metric("Perempuan", f"{jk['Female']:.2f} th")
+        j2.metric("Laki-laki", f"{jk['Male']:.2f} th")
+        j3.metric("Selisih (P − L)", f"{jk['Female'] - jk['Male']:+.2f} th")
+
+    # grafik tren
+    pilih = [negara] + banding
+    tren = DF[DF["country_name"].isin(pilih)][["country_name", "year", TARGET]]
+    dunia = DF.groupby("year", as_index=False)[TARGET].mean().assign(country_name="Rata-rata dunia")
+    gab = pd.concat([tren, dunia], ignore_index=True)
+    garis = alt.Chart(gab).mark_line(point=True).encode(
+        x=sumbu_tahun(),
+        y=alt.Y(f"{TARGET}:Q", scale=alt.Scale(zero=False), title="Life expectancy (tahun)"),
+        color=alt.Color("country_name:N", title=None, legend=alt.Legend(orient="bottom")),
+        strokeDash=alt.condition(alt.datum.country_name == "Rata-rata dunia", alt.value([5, 4]), alt.value([0])),
+        tooltip=["country_name", "year", alt.Tooltip(f"{TARGET}:Q", format=".2f")],
+    ).properties(height=380, title="Tren angka harapan hidup (garis putus-putus = rata-rata dunia)")
+    tampil(garis)
+
+    naik = sub.dropna(subset=[TARGET])
+    insight(f"Angka harapan hidup **{negara}** pada {tahun} adalah **{f2(baris[TARGET])} tahun**, "
+            f"peringkat **{peringkat} dari {len(d_th)}** negara, "
+            f"{'di atas' if baris[TARGET] >= rata_dunia else 'di bawah'} rata-rata dunia ({f2(rata_dunia)}). "
+            f"Sejak {int(naik['year'].iloc[0])} angkanya berubah {f2(naik[TARGET].iloc[-1] - naik[TARGET].iloc[0])} tahun.")
+
+    # indikator kesehatan vs rata-rata dunia
+    st.markdown(f"##### Indikator kesehatan {negara} ({tahun}) dibanding rata-rata dunia")
+    tabel = pd.DataFrame({
+        "Indikator": [LABEL[f] for f in FEATURES],
+        negara: [baris[f] for f in FEATURES],
+        "Rata-rata dunia": [d_th[f].mean() for f in FEATURES],
+    })
+    tabel["Selisih"] = tabel[negara] - tabel["Rata-rata dunia"]
+    st.dataframe(tabel.round(2), hide_index=True, width="stretch")
+    st.caption("Nilai kosong (NaN) berarti data indikator tersebut tidak tersedia untuk negara dan tahun itu.")
+
+    with st.expander("Tabel angka per tahun"):
+        lebar = DF[DF["country_name"].isin(pilih)].pivot(index="year", columns="country_name", values=TARGET)
+        st.dataframe(lebar.round(2), width="stretch")
 
 
 # ------------------------------------------------------------------
@@ -662,6 +739,7 @@ def page_model():
 {
     "🏠 Dashboard": page_dashboard,
     "📊 Data": page_data,
+    "🌎 Profil Negara": page_negara,
     "📈 EDA": page_eda,
     "❤️ Analisis Kesehatan": page_kesehatan,
     "🤖 Prediksi": page_prediksi,
